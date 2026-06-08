@@ -1079,13 +1079,18 @@ def derive_url(f: Finding, base: str, host: str) -> str:
 
 
 class Renderer:
-    def __init__(self, width: int, verbose: bool):
+    def __init__(self, width: int, verbose: bool, demo: bool = False,
+                 dot_ms: int = 30, min_dots: int = 6):
         self.width = max(80, width)
         self.verbose = verbose
+        self.demo = demo
+        self.dot_ms = dot_ms
+        self.min_dots = min_dots
         self.all: list[Finding] = []
         self.base: str = ""
         self.host: str = ""
         self._last_t: float | None = None
+        self._current_layer: str | None = None
 
     # ---- timed output primitives ----
 
@@ -1127,12 +1132,117 @@ class Renderer:
 
     def feed(self, f: Finding) -> None:
         self.all.append(f)
-        if f.layer == "readiness":
-            self._render(f)
+        is_hit_or_readiness = (f.layer == "readiness") or (f.status in ("hit", "error"))
+        show = is_hit_or_readiness or self.verbose
+        if not show:
+            return
+        if self.demo:
+            self._render_animated(f)
         else:
-            if not self.verbose and f.status not in ("hit", "error"):
-                return
             self._render(f)
+
+    # ---- Linux-init-style animated rendering (`--demo`) ----
+
+    def _demo_label(self, f: Finding) -> str:
+        if f.layer == "readiness":
+            verbs = {
+                "robots.txt":                  "Fetching",
+                "sitemap":                     "Discovering",
+                "link headers":                "Reading",
+                "DNS-AID":                     "Resolving",
+                "markdown negotiation":        "Negotiating",
+                "AI bot rules":                "Parsing",
+                "Content Signals":             "Parsing",
+                "Web Bot Auth":                "Probing",
+                "API Catalog":                 "Probing",
+                "OAuth / OIDC discovery":      "Probing",
+                "OAuth Protected Resource":    "Probing",
+                "Auth.md":                     "Reading",
+                "MCP Server Card":             "Probing",
+                "Agent Skills index":          "Probing",
+                "WebMCP":                      "Checking",
+                "x402":                        "Probing",
+                "MPP":                         "Inspecting",
+                "UCP":                         "Probing",
+                "ACP":                         "Probing",
+            }
+            return f"{verbs.get(f.name, 'Checking')} {f.name}"
+        if f.layer == "exposures":
+            return f"Probing {f.name}"
+        if f.layer == "fingerprint":
+            return f"Inspecting {f.name}"
+        return f.name
+
+    def _demo_status(self, f: Finding) -> tuple[str, str]:
+        if f.layer == "readiness":
+            if f.status == "pass":
+                return "PASS", Color.OK + Color.BOLD
+            if f.status == "warn":
+                return "WARN", Color.WARN
+            if f.status == "info":
+                return "INFO", Color.INFO
+            if f.noise:
+                return "SKIP", Color.DIM
+            return "FAIL", Color.FAIL
+        if f.layer == "exposures":
+            if f.status == "hit":
+                sev = f.severity.upper()
+                col = {
+                    "CRITICAL": Color.FAIL + Color.BOLD,
+                    "HIGH":     Color.FAIL,
+                    "MEDIUM":   Color.WARN,
+                    "LOW":      Color.BLUE,
+                    "INFO":     Color.INFO,
+                }.get(sev, Color.INFO)
+                return sev, col
+            return "----", Color.DIM
+        # fingerprint
+        if f.status == "hit":
+            if f.severity in ("low", "medium"):
+                return "FOUND", Color.WARN
+            return "FOUND", Color.INFO
+        return "----", Color.DIM
+
+    def _section_header(self, layer: str) -> None:
+        sys.stdout.write("\n")
+        labels = {"readiness": "AGENT-READINESS",
+                  "exposures": "EXPOSURES",
+                  "fingerprint": "FINGERPRINT"}
+        label = labels.get(layer, layer.upper())
+        line = f"{Color.BOLD}─── {label} ───{Color.END}\n"
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        time.sleep(0.15)
+
+    def _render_animated(self, f: Finding) -> None:
+        # New section header on layer change
+        if f.layer != self._current_layer:
+            self._current_layer = f.layer
+            self._section_header(f.layer)
+
+        label = self._demo_label(f)
+        status, status_col = self._demo_status(f)
+
+        # Column widths: label takes most of the line, status sits in a
+        # fixed-width bracket at the right
+        status_w = 10  # "[  HIGH  ]" etc.
+        label_w = max(30, self.width - status_w - 14)
+        label_disp = label[: label_w].ljust(label_w)
+
+        sys.stdout.write(f"  {label_disp} ")
+        sys.stdout.flush()
+
+        # Animate dots: paint them one at a time so the eye can follow
+        n = self.min_dots
+        tick = self.dot_ms / 1000.0
+        for _ in range(n):
+            time.sleep(tick)
+            sys.stdout.write(f"{Color.DIM}.{Color.END}")
+            sys.stdout.flush()
+
+        # Status block, centered in [  XXXX  ]
+        sys.stdout.write(f"  [{status_col}{status:^8}{Color.END}]\n")
+        sys.stdout.flush()
 
     def _render(self, f: Finding) -> None:
         cid = derive_check_id(f)
@@ -1286,15 +1396,19 @@ def _scan_target(target: str, layers: set[str], args, renderer: Renderer | None,
         # Reset accumulator for this target so summaries don't cross-contaminate
         renderer.all = []
 
+    # In demo mode we force sequential execution so the audience sees one
+    # check at a time, in source order. Normal mode keeps the parallel scan.
+    workers = 1 if (renderer is not None and renderer.demo) else DEFAULT_WORKERS
+
     findings: list[Finding] = []
     t0 = time.time()
     if "readiness" in layers:
-        for f in scan_readiness(base, host):
+        for f in scan_readiness(base, host, workers=workers):
             findings.append(f)
             if renderer is not None:
                 renderer.feed(f)
     if "exposures" in layers:
-        for f in scan_exposures(base):
+        for f in scan_exposures(base, workers=workers):
             findings.append(f)
             if renderer is not None:
                 renderer.feed(f)
@@ -1362,6 +1476,14 @@ def main() -> int:
     p.add_argument("--no-score", action="store_true", help="suppress the readiness score")
     p.add_argument("--no-verdict", action="store_true", help="suppress the vibecoding verdict")
     p.add_argument("--width", type=int, default=None, help="column width (default: auto)")
+    p.add_argument("--demo", action="store_true",
+                   help="Linux-init style: sequential execution, animated dots, "
+                        "[ STATUS ] tags. Slower on purpose so the audience sees "
+                        "each check fire.")
+    p.add_argument("--dot-ms", type=int, default=30,
+                   help="--demo: ms between each animated dot (default 30)")
+    p.add_argument("--min-dots", type=int, default=6,
+                   help="--demo: minimum dots per finding (default 6)")
     args = p.parse_args()
 
     if args.no_color or (not args.json and not sys.stdout.isatty()):
@@ -1392,7 +1514,11 @@ def main() -> int:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    renderer = Renderer(width=get_term_width(args.width), verbose=args.verbose)
+    renderer = Renderer(width=get_term_width(args.width),
+                        verbose=args.verbose,
+                        demo=args.demo,
+                        dot_ms=args.dot_ms,
+                        min_dots=args.min_dots)
     renderer.banner("v0.5")
 
     grand_t0 = time.time()
