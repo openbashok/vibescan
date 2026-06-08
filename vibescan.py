@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import random
 import re
 import shutil
 import socket
@@ -1078,19 +1079,45 @@ def derive_url(f: Finding, base: str, host: str) -> str:
     return base
 
 
+QUIPS = [
+    "sipping coffee while TLS handshakes...",
+    "nine out of ten devs commit .env at least once",
+    "CLAUDE.md is the new robots.txt",
+    "every dot is a real HTTP request, by the way",
+    "the agents are watching too",
+    "DNS-AID is the new MX",
+    "OpenAPI specs leak more than .git",
+    "somewhere a service-role JWT is being googled right now",
+    "Lovable is just yarn create + opinions",
+    "yes, .env.production is real",
+    "the audit log was the first thing to go",
+    "this could be one curl. it's not.",
+    "scaffold tonight, regret tomorrow",
+    "the docker-compose has the password",
+    ".cursorrules is read-only because trust",
+    "MCP server-card.json was supposed to be optional",
+    "vibescan does not judge. it just collects evidence.",
+    "if you can read this, the bot can too",
+]
+
+
 class Renderer:
-    def __init__(self, width: int, verbose: bool, demo: bool = False,
-                 dot_ms: int = 30, min_dots: int = 6):
+    def __init__(self, width: int, verbose: bool, animated: bool = True,
+                 dot_ms: int = 30, min_dots: int = 6,
+                 quip_every: int = 7):
         self.width = max(80, width)
         self.verbose = verbose
-        self.demo = demo
+        self.animated = animated
         self.dot_ms = dot_ms
         self.min_dots = min_dots
+        self.quip_every = max(1, quip_every)
         self.all: list[Finding] = []
         self.base: str = ""
         self.host: str = ""
         self._last_t: float | None = None
         self._current_layer: str | None = None
+        self._rendered_count: int = 0
+        self._quip_pool: list[str] = []
 
     # ---- timed output primitives ----
 
@@ -1136,7 +1163,7 @@ class Renderer:
         show = is_hit_or_readiness or self.verbose
         if not show:
             return
-        if self.demo:
+        if self.animated:
             self._render_animated(f)
         else:
             self._render(f)
@@ -1214,11 +1241,34 @@ class Renderer:
         sys.stdout.flush()
         time.sleep(0.15)
 
+    def _next_quip(self) -> str:
+        """Cycle through a shuffled pool so we don't repeat in the same run."""
+        if not self._quip_pool:
+            self._quip_pool = QUIPS.copy()
+            random.shuffle(self._quip_pool)
+        return self._quip_pool.pop()
+
+    def _maybe_quip(self) -> None:
+        """Drop a self-aware one-liner every Nth finding to keep the
+        console feeling alive on long scans. Skipped on quip_every == 0."""
+        if self.quip_every <= 0 or self._rendered_count == 0:
+            return
+        if self._rendered_count % self.quip_every != 0:
+            return
+        quip = self._next_quip()
+        sys.stdout.write(f"\n  {Color.DIM}// {quip}{Color.END}\n\n")
+        sys.stdout.flush()
+        time.sleep(0.35)
+
     def _render_animated(self, f: Finding) -> None:
         # New section header on layer change
         if f.layer != self._current_layer:
             self._current_layer = f.layer
             self._section_header(f.layer)
+
+        # Drop a one-liner once in a while
+        self._maybe_quip()
+        self._rendered_count += 1
 
         label = self._demo_label(f)
         status, status_col = self._demo_status(f)
@@ -1396,9 +1446,9 @@ def _scan_target(target: str, layers: set[str], args, renderer: Renderer | None,
         # Reset accumulator for this target so summaries don't cross-contaminate
         renderer.all = []
 
-    # In demo mode we force sequential execution so the audience sees one
-    # check at a time, in source order. Normal mode keeps the parallel scan.
-    workers = 1 if (renderer is not None and renderer.demo) else DEFAULT_WORKERS
+    # In animated mode we force sequential execution so the audience sees
+    # one check at a time, in source order. --fast keeps the parallel scan.
+    workers = 1 if (renderer is not None and renderer.animated) else DEFAULT_WORKERS
 
     findings: list[Finding] = []
     t0 = time.time()
@@ -1476,14 +1526,14 @@ def main() -> int:
     p.add_argument("--no-score", action="store_true", help="suppress the readiness score")
     p.add_argument("--no-verdict", action="store_true", help="suppress the vibecoding verdict")
     p.add_argument("--width", type=int, default=None, help="column width (default: auto)")
-    p.add_argument("--demo", action="store_true",
-                   help="Linux-init style: sequential execution, animated dots, "
-                        "[ STATUS ] tags. Slower on purpose so the audience sees "
-                        "each check fire.")
+    p.add_argument("--fast", action="store_true",
+                   help="parallel + silent mode: no animation, no per-line dots. "
+                        "Use for scripting, multi-host batches, or piping output. "
+                        "Default is the animated Linux-init-style stream.")
     p.add_argument("--dot-ms", type=int, default=30,
-                   help="--demo: ms between each animated dot (default 30)")
+                   help="ms between each animated dot (default 30)")
     p.add_argument("--min-dots", type=int, default=6,
-                   help="--demo: minimum dots per finding (default 6)")
+                   help="minimum dots per finding (default 6)")
     args = p.parse_args()
 
     if args.no_color or (not args.json and not sys.stdout.isatty()):
@@ -1516,7 +1566,7 @@ def main() -> int:
 
     renderer = Renderer(width=get_term_width(args.width),
                         verbose=args.verbose,
-                        demo=args.demo,
+                        animated=not args.fast,
                         dot_ms=args.dot_ms,
                         min_dots=args.min_dots)
     renderer.banner("v0.5")
