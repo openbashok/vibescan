@@ -36,11 +36,16 @@ import urllib.request
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Iterator
 
-DEFAULT_WORKERS = 10
+DEFAULT_WORKERS = 24
 
 UA = "vibescan/0.5 (+openbash.dev)"
 TIMEOUT = 10
 DOH = "https://cloudflare-dns.com/dns-query"
+
+# Cached at module load: building an SSL context costs ~10-50ms each time.
+# With ~80 HTTP requests per scan, recreating it per-request added up to
+# multiple seconds for no good reason.
+_SSL_CTX = ssl.create_default_context()
 
 
 # ============================================================================
@@ -59,8 +64,7 @@ def http_request(
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, method=method, headers=hdrs)
-    ctx = ssl.create_default_context()
-    handlers: list = [urllib.request.HTTPSHandler(context=ctx)]
+    handlers: list = [urllib.request.HTTPSHandler(context=_SSL_CTX)]
     if not follow_redirects:
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *a, **kw):
@@ -554,7 +558,7 @@ def scan_readiness(base: str, host: str, workers: int = DEFAULT_WORKERS) -> Iter
     ]
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(fn) for fn in rest]
-        for fut in futs:
+        for fut in cf.as_completed(futs):
             yield fut.result()
 
 
@@ -753,10 +757,9 @@ def check_openapi_public(base: str) -> Finding:
 
 
 def scan_exposures(base: str, workers: int = DEFAULT_WORKERS) -> Iterator[Finding]:
-    """Probe all exposure targets in parallel; yield findings in submission
-    order so the output stays readable. Workers run concurrently, but
-    iteration blocks on the next in-order future, which means the wall
-    time is bounded by max(check_time) per batch — not the sum.
+    """Probe all exposure targets in parallel; yield each finding as soon as
+    its HTTP request finishes (out-of-submission-order). This makes the
+    output a smooth waterfall instead of a staircase of bursts.
     """
     def safe(cat: str, path: str, sev: str, ct: str | None) -> Finding:
         try:
@@ -766,10 +769,9 @@ def scan_exposures(base: str, workers: int = DEFAULT_WORKERS) -> Iterator[Findin
 
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(safe, c, p, s, ct) for c, p, s, ct in EXPOSURE_TARGETS]
-        for fut in futs:
+        futs.append(ex.submit(check_openapi_public, base))
+        for fut in cf.as_completed(futs):
             yield fut.result()
-        # OpenAPI public is a separate, slightly different probe — also parallelizable
-        yield ex.submit(check_openapi_public, base).result()
 
 
 # ============================================================================
