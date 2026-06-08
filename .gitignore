@@ -1,0 +1,35 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Local config
+.env
+.env.local
+
+# Outputs
+*.json
+!package.json
+*.log
+out/
+results/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Agent state (we should know better)
+.claude/
+.cursor/
+.codex/
+.continue/
+.aider*
+.specstory/
