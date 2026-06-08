@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import json
 import re
 import shutil
@@ -33,7 +34,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, asdict
-from typing import Iterator
+from typing import Callable, Iterator
+
+DEFAULT_WORKERS = 10
 
 UA = "vibescan/0.5 (+openbash.dev)"
 TIMEOUT = 10
@@ -260,22 +263,59 @@ def check_link_headers(base: str, ctx: dict) -> Finding:
     return _rfind("Discoverability", "link headers", "fail", "no Link header on home")
 
 
+def _is_ip_or_local(host: str) -> bool:
+    """Skip DNS-AID for IP literals and localhost — they'll never have
+    _index._agents records, and the DoH timeout is ~2s otherwise."""
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return True
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return True
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def check_dns_aid(base: str, ctx: dict, hosts: list[str]) -> Finding:
-    found = []
-    dnssec_ok = False
+    # The primary (canonical) host is hosts[0]; if it's a literal IP or
+    # localhost, no DNS-AID records are possible — skip the lookups.
+    if hosts and _is_ip_or_local(hosts[0]):
+        return _rfind("Discoverability", "DNS-AID", "fail",
+                      "skipped (IP literal or localhost — no DNS records possible)")
+
+    # Build the matrix of queries to run in parallel.
+    queries: list[tuple[str, str, int]] = []  # (proto_for_name, dns_type_name, dns_type_code)
     for host in hosts:
         for proto in AID_PROTOCOLS:
             name = f"_{proto}._agents.{host}"
             for tname, tcode in AID_TYPES:
                 if tname == "TXT" and proto != "index":
                     continue
-                resp = doh(name, tcode)
-                if not resp:
-                    continue
-                if resp.get("Answer"):
-                    found.append((tname, name))
-                    if resp.get("AD") is True:
-                        dnssec_ok = True
+                queries.append((name, tname, tcode))
+
+    found = []
+    dnssec_ok = False
+    with cf.ThreadPoolExecutor(max_workers=min(len(queries), 8)) as ex:
+        futs = {ex.submit(doh, name, tcode): (name, tname)
+                for name, tname, tcode in queries}
+        for fut in cf.as_completed(futs):
+            name, tname = futs[fut]
+            try:
+                resp = fut.result()
+            except Exception:
+                resp = None
+            if not resp:
+                continue
+            if resp.get("Answer"):
+                found.append((tname, name))
+                if resp.get("AD") is True:
+                    dnssec_ok = True
+
     if found and dnssec_ok:
         return _rfind("Discoverability", "DNS-AID", "pass",
                       f"{found[0][0]} {found[0][1]} (DNSSEC AD=true)",
@@ -477,37 +517,45 @@ def check_acp(base: str, ctx: dict) -> Finding:
                            ["/.well-known/acp.json", "/.well-known/acp"])
 
 
-def scan_readiness(base: str, host: str) -> Iterator[Finding]:
+def scan_readiness(base: str, host: str, workers: int = DEFAULT_WORKERS) -> Iterator[Finding]:
+    """robots.txt has to come first (sitemap / AI bot rules / Content Signals
+    all read its parsed entries from ctx). Everything else is independent and
+    runs in parallel; yielded in submission order.
+    """
     ctx: dict = {}
     aid_hosts = [host]
     apex = ".".join(host.split(".")[-2:]) if host.count(".") >= 2 else host
     if apex != host:
         aid_hosts.append(apex)
 
-    # Discoverability
+    # Phase 1: robots.txt populates ctx for the parallel phase
     yield check_robots_txt(base, ctx)
-    yield check_sitemap(base, ctx)
-    yield check_link_headers(base, ctx)
-    yield check_dns_aid(base, ctx, aid_hosts)
-    # Content
-    yield check_markdown(base, ctx)
-    # Bot Access Control
-    yield check_ai_bot_rules(base, ctx)
-    yield check_content_signals(base, ctx)
-    yield check_web_bot_auth(base, ctx)
-    # API/Auth/MCP/Skill Discovery
-    yield check_api_catalog(base, ctx)
-    yield check_oauth_discovery(base, ctx)
-    yield check_oauth_pr(base, ctx)
-    yield check_auth_md(base, ctx)
-    yield check_mcp(base, ctx)
-    yield check_agent_skills(base, ctx)
-    yield check_webmcp(base, ctx)
-    # Commerce (info-only)
-    yield check_x402(base, ctx)
-    yield check_mpp(base, ctx)
-    yield check_ucp(base, ctx)
-    yield check_acp(base, ctx)
+
+    # Phase 2: everything else, parallel-but-ordered
+    rest: list[Callable[[], Finding]] = [
+        lambda: check_sitemap(base, ctx),
+        lambda: check_link_headers(base, ctx),
+        lambda: check_dns_aid(base, ctx, aid_hosts),
+        lambda: check_markdown(base, ctx),
+        lambda: check_ai_bot_rules(base, ctx),
+        lambda: check_content_signals(base, ctx),
+        lambda: check_web_bot_auth(base, ctx),
+        lambda: check_api_catalog(base, ctx),
+        lambda: check_oauth_discovery(base, ctx),
+        lambda: check_oauth_pr(base, ctx),
+        lambda: check_auth_md(base, ctx),
+        lambda: check_mcp(base, ctx),
+        lambda: check_agent_skills(base, ctx),
+        lambda: check_webmcp(base, ctx),
+        lambda: check_x402(base, ctx),
+        lambda: check_mpp(base, ctx),
+        lambda: check_ucp(base, ctx),
+        lambda: check_acp(base, ctx),
+    ]
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(fn) for fn in rest]
+        for fut in futs:
+            yield fut.result()
 
 
 SCORED_CATEGORIES = [
@@ -704,13 +752,24 @@ def check_openapi_public(base: str) -> Finding:
                    evidence={"paths_sample": paths[:25], "title": title})
 
 
-def scan_exposures(base: str) -> Iterator[Finding]:
-    for cat, path, sev, ct in EXPOSURE_TARGETS:
+def scan_exposures(base: str, workers: int = DEFAULT_WORKERS) -> Iterator[Finding]:
+    """Probe all exposure targets in parallel; yield findings in submission
+    order so the output stays readable. Workers run concurrently, but
+    iteration blocks on the next in-order future, which means the wall
+    time is bounded by max(check_time) per batch — not the sum.
+    """
+    def safe(cat: str, path: str, sev: str, ct: str | None) -> Finding:
         try:
-            yield check_exposure(base, cat, path, sev, ct)
+            return check_exposure(base, cat, path, sev, ct)
         except Exception as e:
-            yield Finding("exposures", cat, path, "info", "error", f"exception: {e}")
-    yield check_openapi_public(base)
+            return Finding("exposures", cat, path, "info", "error", f"exception: {e}")
+
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(safe, c, p, s, ct) for c, p, s, ct in EXPOSURE_TARGETS]
+        for fut in futs:
+            yield fut.result()
+        # OpenAPI public is a separate, slightly different probe — also parallelizable
+        yield ex.submit(check_openapi_public, base).result()
 
 
 # ============================================================================
@@ -1024,14 +1083,41 @@ class Renderer:
         self.all: list[Finding] = []
         self.base: str = ""
         self.host: str = ""
+        self._last_t: float | None = None
+
+    # ---- timed output primitives ----
+
+    def _ts(self) -> str:
+        """Per-line timing prefix: ms since the last printed line.
+        Lets the operator spot the slow checks at a glance.
+        """
+        now = time.perf_counter()
+        delta = 0.0 if self._last_t is None else now - self._last_t
+        self._last_t = now
+        if delta < 1.0:
+            return f"{Color.DIM}[+{int(delta * 1000):>4}ms]{Color.END} "
+        return f"{Color.DIM}[+{delta:>5.2f}s]{Color.END} "
+
+    def line(self, msg: str) -> None:
+        print(self._ts() + msg, flush=True)
+
+    def blank(self) -> None:
+        print(flush=True)
+
+    def separator(self) -> None:
+        self.blank()
+        self.line(f"{Color.DIM}{'─' * min(self.width, 90)}{Color.END}")
+        self.blank()
+
+    # ---- public API ----
 
     def banner(self, version: str) -> None:
-        print(f"{Color.BOLD}    vibescan{Color.END} {Color.DIM}{version}{Color.END}", flush=True)
-        print(f"    {Color.DIM}AI/agent footprint recon  ·  openbash.dev{Color.END}\n",
-              flush=True)
+        self.line(f"{Color.BOLD}    vibescan{Color.END} {Color.DIM}{version}{Color.END}")
+        self.line(f"    {Color.DIM}AI/agent footprint recon  ·  openbash.dev{Color.END}")
+        self.blank()
 
     def info(self, msg: str) -> None:
-        print(f"{Color.INFO}[INF]{Color.END} {msg}", flush=True)
+        self.line(f"{Color.INFO}[INF]{Color.END} {msg}")
 
     def set_context(self, base: str, host: str) -> None:
         self.base = base
@@ -1040,7 +1126,7 @@ class Renderer:
     def feed(self, f: Finding) -> None:
         self.all.append(f)
         if f.layer == "readiness":
-            self._render(f)  # always show every readiness check
+            self._render(f)
         else:
             if not self.verbose and f.status not in ("hit", "error"):
                 return
@@ -1054,9 +1140,11 @@ class Renderer:
         url = derive_url(f, self.base, self.host)
         tags = derive_tags(f)
 
+        # Compute available width budget: the timing prefix occupies ~10 chars
         head_plain = f"[{cid}] [{layer}] [{tag}]"
         tag_plain = f" [{','.join(tags)}]" if tags else ""
-        avail = max(30, self.width - len(head_plain) - len(tag_plain) - 1)
+        used = 10 + len(head_plain) + len(tag_plain) + 1
+        avail = max(30, self.width - used)
         url_short = _truncate(url, avail)
 
         line = (
@@ -1067,15 +1155,15 @@ class Renderer:
         line += url_short if f.status in ("pass", "hit", "warn", "info", "error") else f"{Color.DIM}{url_short}{Color.END}"
         if tags:
             line += f" {Color.DIM}[{','.join(tags)}]{Color.END}"
-        print(line, flush=True)
+        self.line(line)
 
     def summary(self, elapsed: float) -> None:
         readiness_n = sum(1 for f in self.all if f.layer == "readiness")
         exposures_hits = sum(1 for f in self.all if f.layer == "exposures" and f.status == "hit")
         exposures_total = sum(1 for f in self.all if f.layer == "exposures")
         fp_hits = sum(1 for f in self.all if f.layer == "fingerprint" and f.status == "hit")
-        print()
-        self.info(f"scan completed in {elapsed:.1f}s")
+        self.blank()
+        self.info(f"scan completed in {elapsed:.2f}s")
         self.info(f"readiness checks: {readiness_n}  ·  "
                   f"exposures: {exposures_hits} hits / {exposures_total}  ·  "
                   f"fingerprint: {fp_hits} hits")
@@ -1089,15 +1177,14 @@ class Renderer:
             "A":  Color.OK,
             "A+": Color.OK + Color.BOLD,
         }.get(s.grade, Color.INFO)
-        print()
-        print(f"{Color.BOLD}[SCORE]{Color.END}  "
-              f"Agent-Readiness  "
-              f"{grade_col}{Color.BOLD}{s.overall_100}/100{Color.END}  "
-              f"{Color.DIM}·{Color.END}  "
-              f"{grade_col}{Color.BOLD}{s.grade}{Color.END}  "
-              f"{Color.DIM}·{Color.END}  "
-              f"{grade_col}{s.tier}{Color.END}",
-              flush=True)
+        self.blank()
+        self.line(f"{Color.BOLD}[SCORE]{Color.END}  "
+                  f"Agent-Readiness  "
+                  f"{grade_col}{Color.BOLD}{s.overall_100}/100{Color.END}  "
+                  f"{Color.DIM}·{Color.END}  "
+                  f"{grade_col}{Color.BOLD}{s.grade}{Color.END}  "
+                  f"{Color.DIM}·{Color.END}  "
+                  f"{grade_col}{s.tier}{Color.END}")
         for cs in s.categories:
             bar_w = 20
             filled = round(cs.percent / 100 * bar_w)
@@ -1106,8 +1193,8 @@ class Renderer:
             col_cat = (Color.FAIL if cs.percent < 25 else
                        Color.WARN if cs.percent < 50 else
                        Color.OK)
-            print(f"  {cs.name:<36}  {col_cat}{cs.percent:>3}/100{Color.END}  "
-                  f"{Color.DIM}{bar} {ratio}{Color.END}", flush=True)
+            self.line(f"  {cs.name:<36}  {col_cat}{cs.percent:>3}/100{Color.END}  "
+                      f"{Color.DIM}{bar} {ratio}{Color.END}")
 
     def verdict(self, v: Verdict) -> None:
         label_col = {
@@ -1116,32 +1203,32 @@ class Renderer:
             "likely vibecoded":    Color.WARN,
             "vibecoded confirmed": Color.FAIL + Color.BOLD,
         }.get(v.label, Color.INFO)
-        print()
-        print(f"{Color.BOLD}[VIBECODING]{Color.END}  "
-              f"{label_col}{v.label}{Color.END} "
-              f"{Color.DIM}({v.score} pts){Color.END}", flush=True)
+        self.blank()
+        self.line(f"{Color.BOLD}[VIBECODING]{Color.END}  "
+                  f"{label_col}{v.label}{Color.END} "
+                  f"{Color.DIM}({v.score} pts){Color.END}")
         if not v.evidence:
-            print(f"  {Color.DIM}no AI/agent fingerprint found{Color.END}", flush=True)
+            self.line(f"  {Color.DIM}no AI/agent fingerprint found{Color.END}")
             return
-        print(f"  {Color.DIM}agents:  {Color.END} "
-              f"{', '.join(v.agents) if v.agents else '—'}", flush=True)
-        print(f"  {Color.DIM}builders:{Color.END} "
-              f"{', '.join(v.builders) if v.builders else '—'}", flush=True)
-        print(f"  {Color.DIM}evidence:{Color.END}", flush=True)
+        self.line(f"  {Color.DIM}agents:  {Color.END} "
+                  f"{', '.join(v.agents) if v.agents else '—'}")
+        self.line(f"  {Color.DIM}builders:{Color.END} "
+                  f"{', '.join(v.builders) if v.builders else '—'}")
+        self.line(f"  {Color.DIM}evidence:{Color.END}")
         for item in v.evidence:
             pts = f"+{item.points:>3}"
             attr = _truncate(item.attribution, 24).ljust(24)
             signal = _truncate(item.signal, self.width - 14 - 24 - 4)
-            print(f"    {Color.OK}{pts}{Color.END}  "
-                  f"{Color.BOLD}{attr}{Color.END} "
-                  f"{Color.DIM}{signal}{Color.END}", flush=True)
+            self.line(f"    {Color.OK}{pts}{Color.END}  "
+                      f"{Color.BOLD}{attr}{Color.END} "
+                      f"{Color.DIM}{signal}{Color.END}")
 
     def exposures(self) -> None:
         hits = [f for f in self.all if f.layer == "exposures" and f.status == "hit"]
-        print()
+        self.blank()
         if not hits:
-            print(f"{Color.BOLD}[EXPOSURES]{Color.END} "
-                  f"{Color.OK}none{Color.END}", flush=True)
+            self.line(f"{Color.BOLD}[EXPOSURES]{Color.END} "
+                      f"{Color.OK}none{Color.END}")
             return
         sev_counts: dict[str, int] = {}
         for f in hits:
@@ -1150,8 +1237,8 @@ class Renderer:
                        "medium": Color.WARN, "low": Color.BLUE, "info": Color.INFO}
         parts = [f"{sev_palette[s]}{sev_counts[s]} {s}{Color.END}"
                  for s in ("critical", "high", "medium", "low", "info") if sev_counts.get(s)]
-        print(f"{Color.BOLD}[EXPOSURES]{Color.END}  {' · '.join(parts)}  "
-              f"{Color.DIM}({len(hits)} findings){Color.END}", flush=True)
+        self.line(f"{Color.BOLD}[EXPOSURES]{Color.END}  {' · '.join(parts)}  "
+                  f"{Color.DIM}({len(hits)} findings){Color.END}")
 
 
 # ============================================================================
@@ -1193,7 +1280,7 @@ def _scan_target(target: str, layers: set[str], args, renderer: Renderer | None,
         if note:
             renderer.info(note)
         renderer.info(f"layers  {', '.join(sorted(layers))}")
-        print()
+        renderer.blank()
         # Reset accumulator for this target so summaries don't cross-contaminate
         renderer.all = []
 
@@ -1306,13 +1393,10 @@ def main() -> int:
     renderer = Renderer(width=get_term_width(args.width), verbose=args.verbose)
     renderer.banner("v0.5")
 
-    sep = Color.DIM + ("─" * min(renderer.width, 90)) + Color.END
     grand_t0 = time.time()
     for i, t in enumerate(targets, 1):
         if i > 1:
-            print()
-            print(sep)
-            print()
+            renderer.separator()
         try:
             _scan_target(t, layers, args, renderer, i, len(targets))
         except SystemExit as e:
@@ -1322,7 +1406,7 @@ def main() -> int:
     grand_elapsed = time.time() - grand_t0
 
     if len(targets) > 1:
-        print()
+        renderer.blank()
         renderer.info(f"all scans completed: "
                       f"{Color.BOLD}{len(targets)} targets{Color.END} "
                       f"in {grand_elapsed:.1f}s")

@@ -21,7 +21,15 @@ import http.server
 import os
 import socketserver
 import sys
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
+
+
+class ThreadingHTTPServer(ThreadingMixIn, socketserver.TCPServer):
+    """Concurrent request handling so vibescan's ThreadPoolExecutor isn't
+    bottlenecked by the demo server itself."""
+    daemon_threads = True
+    allow_reuse_address = True
 
 PORT = int(os.environ.get("PORT", 80))
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -122,9 +130,8 @@ def main() -> int:
         sys.stderr.write(f"site directory not found: {ROOT}\n")
         return 1
 
-    socketserver.TCPServer.allow_reuse_address = True
     try:
-        with socketserver.TCPServer((HOST, PORT), Handler) as httpd:
+        with ThreadingHTTPServer((HOST, PORT), Handler) as httpd:
             print(f"vibescan demo  ·  http://{HOST}:{PORT}  ·  root={ROOT}")
             print(f"Ctrl-C to stop.")
             httpd.serve_forever()
