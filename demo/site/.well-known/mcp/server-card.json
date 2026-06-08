@@ -1,0 +1,21 @@
+{
+  "serverInfo": {
+    "name": "acme-habits-mcp",
+    "version": "0.3.0"
+  },
+  "transport": {
+    "type": "streamable-http",
+    "url": "https://mcp.acmehabits.com"
+  },
+  "capabilities": {
+    "tools": true,
+    "prompts": false,
+    "resources": true
+  },
+  "tools": [
+    { "name": "track_habit",   "description": "Log a habit completion for the current user" },
+    { "name": "get_streak",    "description": "Get the current streak for a habit" },
+    { "name": "list_habits",   "description": "List habits for the current user" },
+    { "name": "ai_coach_ping", "description": "Request an AI coaching message" }
+  ]
+}

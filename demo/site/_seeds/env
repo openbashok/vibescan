@@ -1,0 +1,13 @@
+# Acme Habits Tracker — .env  (do not commit — but we did)
+DATABASE_URL=postgres://acme:s3cret_db_password@db.internal.acmehabits.com:5432/habits
+SUPABASE_URL=https://abcdefghijklmnopqr.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFub24ifQ.demo_anon_xxxxxxxxxxxxxxxxxxxxxxxx
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJzZXJ2aWNlX3JvbGUifQ.demo_service_xxxxxxxxxxxxxxxxxxxxxx
+OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh
+ANTHROPIC_API_KEY=sk-ant-api03-DemoFakeFakeFakeFakeFakeFakeFakeFakeFake
+STRIPE_SECRET_KEY=demo_fake_stripe_secret_not_a_real_key_format
+AWS_ACCESS_KEY_ID=AKIADEMOFAKEKEYAAAAA
+AWS_SECRET_ACCESS_KEY=demo_aws_secret_for_demo_purposes_only/abcdefghijk
+RESEND_API_KEY=re_DemoFakeFakeFakeFakeFakeFakeFa
+ADMIN_TOKEN=admin_DemoFakeStaticToken000
+JWT_SECRET=demo-jwt-secret-please-rotate-in-real-life

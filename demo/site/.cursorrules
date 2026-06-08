@@ -1,0 +1,8 @@
+Always use TypeScript strict mode.
+Components in PascalCase, hooks in camelCase prefixed with `use`.
+Never use `any` — prefer `unknown` and narrow.
+Avoid `console.log` in production code; use the structured logger in `src/lib/log.ts`.
+Use named exports, not default exports.
+Database queries via supabase-js only — see `src/lib/db.ts`.
+Internal admin endpoints live at `/api/admin/*` and require an `X-Admin-Token` header.
+Stripe webhooks land at `/api/webhooks/stripe` and must verify the signature in `STRIPE_WEBHOOK_SECRET`.

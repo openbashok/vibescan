@@ -1,0 +1,20 @@
+# Acme Habits Tracker — robots.txt
+
+User-agent: *
+Disallow: /admin/
+Disallow: /api/admin/
+
+User-agent: GPTBot
+Disallow: /private/
+Disallow: /api/admin/
+
+User-agent: ClaudeBot
+Disallow: /private/
+
+User-agent: Google-Extended
+Disallow:
+
+User-agent: PerplexityBot
+Disallow: /private/
+
+Content-Signal: search=yes, ai-train=no, ai-input=yes

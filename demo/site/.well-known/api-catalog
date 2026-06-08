@@ -1,0 +1,16 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://api.acmehabits.com",
+      "service-desc": [
+        { "href": "https://api.acmehabits.com/openapi.json", "type": "application/vnd.oai.openapi+json" }
+      ],
+      "service-doc": [
+        { "href": "https://api.acmehabits.com/docs", "type": "text/html" }
+      ],
+      "status": [
+        { "href": "https://api.acmehabits.com/health", "type": "application/json" }
+      ]
+    }
+  ]
+}

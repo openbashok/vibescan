@@ -1,0 +1,7 @@
+{
+  "resource": "https://api.acmehabits.com",
+  "authorization_servers": ["https://auth.acmehabits.com"],
+  "scopes_supported": ["read:habits", "write:habits", "read:insights"],
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://api.acmehabits.com/docs"
+}

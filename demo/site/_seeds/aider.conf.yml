@@ -1,0 +1,10 @@
+# Aider configuration committed by mistake
+model: anthropic/claude-sonnet-4-5
+edit-format: diff
+auto-commits: true
+git-commit-verify: false
+read:
+  - CLAUDE.md
+  - AGENTS.md
+  - src/lib/db.ts
+  - src/lib/auth.ts

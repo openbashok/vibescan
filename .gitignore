@@ -15,6 +15,7 @@ env/
 # Outputs
 *.json
 !package.json
+!demo/**/*.json
 *.log
 out/
 results/

@@ -115,12 +115,35 @@ the site was built with or for AI coding agents:
 Verdict labels: `not detected` (0), `weak signals` (1–9), `likely vibecoded`
 (10–29), `vibecoded confirmed` (30+).
 
+## Demo
+
+A local target you can scan repeatably (for conference demos, smoke tests,
+or to remind yourself what the output looks like) lives in `demo/`:
+
+```bash
+sudo python3 demo/serve.py            # port 80 (clean URL)
+# or
+PORT=8080 python3 demo/serve.py       # no sudo
+```
+
+Then:
+
+```bash
+python3 vibescan.py http://vibedemo.local      # if you added the hosts entry
+python3 vibescan.py http://127.0.0.1:8080      # otherwise
+```
+
+See [demo/README.md](demo/README.md) for setup and the expected output
+(score B/Negotiable, vibecoding confirmed, ~11 exposures including a
+`.env` with several provider keys).
+
 ## Layout
 
 ```
 .
 ├── agent_ready.py   # original console port of isitagentready.com checks
 ├── vibescan.py      # the scanner (this is what you run)
+├── demo/            # local fake site for live demos
 ├── README.md
 ├── LICENSE
 └── .gitignore

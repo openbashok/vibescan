@@ -1,0 +1,41 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Acme Habits API",
+    "version": "1.0.0",
+    "description": "Public API for the Acme Habits Tracker."
+  },
+  "servers": [
+    { "url": "https://api.acmehabits.com" }
+  ],
+  "paths": {
+    "/api/v1/habits": {
+      "get":  { "summary": "List habits", "tags": ["habits"] },
+      "post": { "summary": "Create habit", "tags": ["habits"] }
+    },
+    "/api/v1/habits/{id}": {
+      "get":    { "summary": "Get habit" },
+      "patch":  { "summary": "Update habit" },
+      "delete": { "summary": "Delete habit" }
+    },
+    "/api/v1/insights": {
+      "get": { "summary": "Get AI insights" }
+    },
+    "/api/v1/streaks": {
+      "get": { "summary": "Get streaks" }
+    },
+    "/api/v1/coach": {
+      "post": {
+        "summary": "Get an AI coaching message",
+        "x-payment-info": { "asset": "USDC", "amount": "0.05", "recipient": "acct_acmehabits" }
+      }
+    },
+    "/api/admin/users": {
+      "get": { "summary": "Admin: list users", "tags": ["admin"] }
+    },
+    "/api/admin/refunds": {
+      "get":  { "summary": "Admin: refund management", "tags": ["admin"] },
+      "post": { "summary": "Admin: issue refund", "tags": ["admin"] }
+    }
+  }
+}
