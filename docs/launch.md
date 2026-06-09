@@ -1,170 +1,53 @@
-# vibescan — recon de superficie agéntica y huella de IA en sitios web
+Empecé a notar algo escaneando sitios estos últimos meses: archivos como
+CLAUDE.md, AGENTS.md, .cursorrules sirviéndose públicos desde el web
+root. Documentos pensados como contexto privado para un agente de código
+— convenciones del proyecto, paths de admin, prompts, a veces
+referencias literales al .env.
 
-vibescan es una herramienta de línea de comandos, en Python puro y sin
-dependencias externas, que escanea un sitio web y devuelve tres cosas en
-una sola corrida:
+Es lo mismo de siempre con cara nueva. El dev usó un asistente, el
+asistente generó archivos de contexto, y el deploy los subió igual que
+cualquier otro markdown. La diferencia con un .git/config expuesto es
+que el CLAUDE.md te resume el sitio en lenguaje natural — modelo de
+amenazas incluido.
 
-1. cuánto está preparado el sitio para agentes de IA (estándares emergentes
-   tipo MCP, OAuth discovery, Agent Skills, DNS-AID),
-2. qué archivos generados por agentes de código quedaron expuestos por error
-   en el web root,
-3. qué tan probable es que el sitio haya sido construido con un builder
-   asistido por IA, y en ese caso, con cuál.
+vibescan es una tool en Python que armé para hacer ese chequeo
+sistemáticamente. En una sola corrida hace tres cosas que normalmente
+toman dos tools y un grep:
 
-Repo: https://github.com/openbashok/vibescan — MIT.
+Le calcula el score de agent-readiness al sitio, con la misma fórmula
+que usa isitagentready.com de Cloudflare. Mira robots.txt con reglas
+para bots de IA, DNS-AID (registros SVCB/HTTPS/TXT bajo
+_index._agents.<host>), MCP server-card, OpenID/OAuth discovery, OAuth
+Protected Resource, Agent Skills index, Web Bot Auth, Auth.md, x402.
+Devuelve grade letra estilo SSL Labs, de F a A+.
 
-## Por qué existe
+Busca los archivos típicos que los asistentes dejan en el repo y que el
+deploy nunca filtra: CLAUDE.md, AGENTS.md, .cursorrules, .windsurfrules,
+.aider.conf.yml, .aider.chat.history.md, .continue/config.json,
+.codex/config.toml, .claude/settings.local.json, .cursor/mcp.json,
+.github/copilot-instructions.md. También los clásicos — .env*, .git/*,
+dumps SQL, backups, lockfiles, OpenAPI público. Cuando el .env aparece,
+corre regex sobre el cuerpo y reporta las claves que reconoce: AWS,
+OpenAI, Anthropic, Google, GitHub, Slack, Stripe, Supabase JWT, bloques
+PEM. La superficie OpenAPI la enumera con title y path count.
 
-Dos tendencias coincidieron en el último año.
+Detecta si el sitio fue construido con un builder asistido por IA —
+Lovable, v0.dev, bolt.new, Base44, Replit, GPT-Engineer — leyendo
+watermarks del HTML y de los bundles JS, sufijos de host de prototipado
+(lovableproject.com, bolt.host, base44.app, replit.dev), y meta
+generator. Cuando hay evidencia suficiente, devuelve "vibecoded
+confirmed" con la atribución desglosada por agente y por builder.
 
-Cada vez más sitios nuevos se están construyendo con scaffolders asistidos
-por IA (Lovable, v0.dev, bolt.new, Base44, Replit, GPT-Engineer) y con
-asistentes de código (Claude Code, Cursor, Aider, Continue, Copilot,
-Windsurf). Estos generan archivos de contexto y configuración que el
-desarrollador, especialmente uno con poca experiencia operativa,
-frecuentemente termina deployando junto con el sitio. `CLAUDE.md`,
-`.cursorrules`, `.aider.conf.yml`, `.continue/config.json` y similares
-contienen información que jamás debería ser pública: arquitectura interna,
-prompts, paths de admin, a veces el contenido literal del `.env`.
+Salida estilo init de Linux: cada chequeo imprime su etiqueta, los dots
+animan en pantalla mientras la request HTTP está en vuelo, y el status
+sale entre brackets cuando termina. Si la request tarda 2 segundos, ves
+60 dots. Si tarda 5 ms, ves el mínimo. Modo silencioso con --fast para
+multi-host o pipeline. JSON con --json.
 
-En paralelo, una serie de estándares emergentes están apareciendo para que
-los sitios sean "navegables por agentes": reglas para bots de IA en
-robots.txt, Content Signals, DNS-AID (registros SVCB/HTTPS/TXT bajo
-`_<proto>._agents.<host>`), Markdown Negotiation, MCP server-card, Agent
-Skills, Web Bot Auth, Auth.md, y protocolos de comercio agéntico
-(x402, MPP, UCP, ACP).
+Python puro, stdlib only, un archivo. MIT.
 
-vibescan cubre las dos direcciones: mide qué tanto el sitio adoptó esos
-estándares y al mismo tiempo busca filtraciones típicas de la construcción
-asistida por agentes.
+    git clone https://github.com/openbashok/vibescan
+    cd vibescan
+    python3 vibescan.py example.com
 
-## Qué chequea, en concreto
-
-### Capa 1 — Agent-readiness (única scoreada)
-
-19 chequeos alineados con los de isitagentready.com / Cloudflare:
-
-- Discoverability: robots.txt, Sitemap, Link headers (RFC 8288), DNS-AID
-- Content: negociación de Markdown vía `Accept: text/markdown`
-- Bot Access Control: reglas para GPTBot / ClaudeBot / PerplexityBot / etc;
-  Content Signals; Web Bot Auth (HTTP message signatures)
-- API / Auth / MCP / Skill discovery: `/.well-known/api-catalog`
-  (RFC 9727), OpenID/OAuth discovery, OAuth Protected Resource (RFC 9728),
-  Auth.md, MCP server-card, Agent Skills index, WebMCP
-- Commerce (informacional, no entra en el score): x402, MPP, UCP, ACP
-
-### Capa 2 — Exposures (informacional, no afecta el score)
-
-Sondeo de ~50 paths que típicamente quedan expuestos por agentes de código
-o por procesos de deploy mal cerrados:
-
-- Archivos de contexto de agentes: `CLAUDE.md`, `AGENTS.md`,
-  `.cursorrules`, `.windsurfrules`, `.aider.*`, `.continue/`, `.claude/`,
-  `.cursor/`, `.codex/`, `.specstory/`,
-  `.github/copilot-instructions.md`
-- VCS: `.git/config`, `.git/HEAD`, `.git/logs/HEAD`, `.svn/entries`,
-  `.hg/hgrc`
-- Secretos y configuración: `.env*`, `credentials.json`, `secrets.json`,
-  `docker-compose.yml`
-- Dumps y backups: SQL, SQLite, tar.gz, zip
-- IDE / OS: `.DS_Store`, `.vscode/`, `.idea/`
-- Lockfiles públicos
-- Superficie de API: `/openapi.json` accesible
-
-Si el `.env` se sirve, vibescan corre regex sobre el cuerpo y reporta las
-claves reconocidas: AWS access keys, OpenAI `sk-*`, Anthropic `sk-ant-*`,
-Google API, GitHub tokens, Slack tokens, Stripe `sk_live_*`, Supabase
-JWT, bloques de PEM private key, y patrones genéricos `API_KEY=`,
-`SECRET=`, `TOKEN=`, `PASSWORD=`.
-
-### Capa 3 — Fingerprint (informacional, alimenta el veredicto)
-
-Lectura del HTML de la homepage y de los bundles JS linkeados, buscando:
-
-- meta `<generator>`
-- headers reveladores (`server`, `x-powered-by`, `x-vercel-id`, etc.)
-- watermarks textuales de builders: Lovable, v0.dev, bolt.new, Base44,
-  Replit, GPT-Engineer, "generated by …", "made with …"
-- sufijos de host de prototipado: `lovableproject.com`, `bolt.host`,
-  `base44.app`, `replit.dev`
-- Supabase anon JWT embebido en bundle
-
-## Cómo califica
-
-**Score 0–100** sobre agent-readiness, con la fórmula transparente de
-isitagentready.com:
-
-```
-overall = (Σ passes) / (Σ chequeos scoreados) × 100
-```
-
-Mapeado a grade letra (estilo SSL Labs) y tier:
-
-| Score   | Grade | Tier          |
-|---------|-------|---------------|
-| 0–19    | F     | Pre-Agent     |
-| 20–39   | D     | Crawlable     |
-| 40–59   | C     | Discoverable  |
-| 60–79   | B     | Negotiable    |
-| 80–94   | A     | Agentic       |
-| 95–100  | A+    | Native        |
-
-**Verdict de vibecoding** independiente, basado en suma ponderada de
-señales: archivos de agentes expuestos (15 pts c/u), watermarks de builders
-(8–12 pts c/u), sufijos de host (2–10 pts c/u), meta generator (8 pts).
-Cada evidencia reporta a qué agente o builder se le atribuye. Tres niveles:
-"weak signals", "likely vibecoded", "vibecoded confirmed".
-
-## Cómo se ve correr
-
-Salida estilo init de Linux: cada chequeo se imprime con su etiqueta, dots
-animados mientras la request HTTP está en vuelo, y status entre brackets
-al cerrar.
-
-```
-─── AGENT-READINESS ───
-  Fetching robots.txt                      ......  [  PASS  ]
-  Discovering sitemap                      ......  [  PASS  ]
-  Resolving DNS-AID                        ......  [  FAIL  ]
-  Probing OAuth / OIDC discovery           ......  [  PASS  ]
-  Probing MCP Server Card                  ......  [  PASS  ]
-
-─── EXPOSURES ───
-  Probing /CLAUDE.md                       ......  [  HIGH  ]
-  Probing /.cursorrules                    ......  [  HIGH  ]
-  Probing /.env                            ......  [CRITICAL]
-  Probing /.git/config                     ......  [CRITICAL]
-
-─── FINGERPRINT ───
-  Inspecting <meta generator>              ......  [ FOUND  ]
-  Searching builder watermarks             ......  [ FOUND  ]
-
-[VIBECODING]  vibecoded confirmed (120 pts)
-[EXPOSURES]   3 critical · 6 high · 1 medium · 1 low  (11 findings)
-[SCORE]       Agent-Readiness  71/100 · B · Negotiable
-```
-
-Modo silencioso y paralelo disponible con `--fast`, para uso scripted o
-para barrer una lista de hosts con `-l hosts.txt`. JSON con `--json`.
-
-## Para probarlo
-
-```bash
-git clone https://github.com/openbashok/vibescan
-cd vibescan
-
-# contra un target real:
-python3 vibescan.py example.com
-
-# multi-host desde archivo:
-python3 vibescan.py -l hosts.txt
-
-# levantar el sitio simulado incluido y probar contra él:
-PORT=8080 python3 demo/serve.py
-python3 vibescan.py http://127.0.0.1:8080
-```
-
-Python 3.10+, stdlib only.
-
-Hecho por openbash. Bug reports, PRs y feedback son bienvenidos en el
-repo.
+Repo: https://github.com/openbashok/vibescan — abierto a issues y PRs.
