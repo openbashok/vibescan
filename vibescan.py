@@ -823,9 +823,22 @@ BUILDER_BLOB_PATTERNS = [
     # Visual / no-code platforms — all now ship AI layers (Figma Make,
     # Framer AI, Wix Studio AI, Webflow AI, Bubble AI, Softr AI),
     # so auto-generated output carries comparable risk to the AI-native list.
-    ("figma",        re.compile(r"figma\.site|figma\.com/make|"
-                                r"built with figma|made with figma|"
-                                r"powered by figma", re.I)),
+    # Figma Make leaves a pile of deterministic markers in the HTML even when
+    # the site is served from the customer's own domain: an explicit comment,
+    # an `isFigmake` JS flag, the SitesRuntime loader, the /_runtimes path
+    # prefix, and a reporting endpoint back at figma.com. Any of them is a
+    # smoking gun — and unlike `figma.com/make`, they actually appear in
+    # production HTML (see geopagos.com).
+    ("figma",        re.compile(
+        r"created in figma\s+make"
+        r"|isfigmake\s*:\s*true"
+        r"|new\s+SitesRuntime\b"
+        r"|/_runtimes/sites-runtime"
+        r"|reportingdomain[^,]*figma\.com"
+        r"|figma\.site"
+        r"|figma\.com/make"
+        r"|built with figma|made with figma|powered by figma",
+        re.I)),
     ("framer",       re.compile(r"made with framer|framer\.com|framer\.app|"
                                 r"powered by framer", re.I)),
     ("webflow",      re.compile(r"made (with|in) webflow|webflow\.io|"
