@@ -186,7 +186,6 @@ class ReadinessScore:
     overall_100: int
     overall_10: float
     grade: str        # "F" | "D" | "C" | "B" | "A" | "A+"
-    tier: str         # "Pre-Agent" | "Crawlable" | "Discoverable" | "Negotiable" | "Agentic" | "Native"
     categories: list[CategoryScore]
 
 
@@ -731,19 +730,19 @@ def compute_readiness_score(findings: list[Finding]) -> ReadinessScore:
     overall_10 = round(overall_100 / 10, 1)
 
     if overall_100 < 20:
-        grade, tier = "F",  "Pre-Agent"
+        grade = "F"
     elif overall_100 < 40:
-        grade, tier = "D",  "Crawlable"
+        grade = "D"
     elif overall_100 < 60:
-        grade, tier = "C",  "Discoverable"
+        grade = "C"
     elif overall_100 < 80:
-        grade, tier = "B",  "Negotiable"
+        grade = "B"
     elif overall_100 < 95:
-        grade, tier = "A",  "Agentic"
+        grade = "A"
     else:
-        grade, tier = "A+", "Native"
+        grade = "A+"
 
-    return ReadinessScore(overall_100, overall_10, grade, tier, category_scores)
+    return ReadinessScore(overall_100, overall_10, grade, category_scores)
 
 
 # ============================================================================
@@ -1060,18 +1059,9 @@ def compute_verdict(findings: list[Finding]) -> Verdict:
                         break
 
     score = sum(i.points for i in items)
-    if score == 0:
-        label = "not detected"
-    elif score < 10:
-        label = "weak signals"
-    elif score < 30:
-        label = "likely vibecoded"
-    else:
-        label = "vibecoded confirmed"
-
     agents = sorted({i.attribution for i in items if i.attribution in AGENT_NAMES})
     builders = sorted({i.attribution for i in items if i.attribution not in AGENT_NAMES})
-    return Verdict(score=score, label=label, agents=agents, builders=builders,
+    return Verdict(score=score, label="", agents=agents, builders=builders,
                    evidence=sorted(items, key=lambda x: -x.points))
 
 
@@ -1509,9 +1499,7 @@ class Renderer:
                   f"Agent-Readiness  "
                   f"{grade_col}{Color.BOLD}{s.overall_100}/100{Color.END}  "
                   f"{Color.DIM}·{Color.END}  "
-                  f"{grade_col}{Color.BOLD}{s.grade}{Color.END}  "
-                  f"{Color.DIM}·{Color.END}  "
-                  f"{grade_col}{s.tier}{Color.END}")
+                  f"{grade_col}{Color.BOLD}{s.grade}{Color.END}")
         for cs in s.categories:
             bar_w = 20
             filled = round(cs.percent / 100 * bar_w)
@@ -1524,18 +1512,14 @@ class Renderer:
                       f"{Color.DIM}{bar} {ratio}{Color.END}")
 
     def verdict(self, v: Verdict) -> None:
-        label_col = {
-            "not detected":        Color.OK,
-            "weak signals":        Color.INFO,
-            "likely vibecoded":    Color.WARN,
-            "vibecoded confirmed": Color.FAIL + Color.BOLD,
-        }.get(v.label, Color.INFO)
         self.blank()
+        n_agents = len(v.agents)
+        n_builders = len(v.builders)
         self.line(f"{Color.BOLD}[VIBECODING]{Color.END}  "
-                  f"{label_col}{v.label}{Color.END} "
-                  f"{Color.DIM}({v.score} pts){Color.END}")
+                  f"score {Color.BOLD}{v.score} pts{Color.END}  "
+                  f"{Color.DIM}·{Color.END}  "
+                  f"{n_agents} agent(s), {n_builders} builder(s) detected")
         if not v.evidence:
-            self.line(f"  {Color.DIM}no AI/agent fingerprint found{Color.END}")
             return
         self.line(f"  {Color.DIM}agents:  {Color.END} "
                   f"{', '.join(v.agents) if v.agents else '—'}")
