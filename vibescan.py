@@ -1066,7 +1066,7 @@ def derive_url(f: Finding, base: str, host: str) -> str:
 
 class Renderer:
     def __init__(self, width: int, verbose: bool,
-                 animated: bool = True, dot_ms: int = 25, min_dots: int = 5):
+                 animated: bool = True, dot_ms: int = 18, min_dots: int = 3):
         self.width = max(80, width)
         self.verbose = verbose
         self.animated = animated
@@ -1117,13 +1117,17 @@ class Renderer:
 
     def feed(self, f: Finding) -> None:
         self.all.append(f)
-        is_hit_or_readiness = (f.layer == "readiness") or (f.status in ("hit", "error"))
-        show = is_hit_or_readiness or self.verbose
-        if not show:
-            return
         if self.animated:
+            # Animated mode is for live demos / interactive runs. Show every
+            # check the scanner actually performs — hit or miss — so the
+            # console reflects the real volume of work, not just the
+            # "interesting" results.
             self._render_animated(f)
-        else:
+            return
+        # Plain mode (scripted / piped): only the meaningful lines unless
+        # --verbose is set.
+        is_hit_or_readiness = (f.layer == "readiness") or (f.status in ("hit", "error"))
+        if is_hit_or_readiness or self.verbose:
             self._render(f)
 
     # ---- animated rendering (default) ----
@@ -1442,10 +1446,10 @@ def main() -> int:
                    help="disable per-line dot animation. Output still streams "
                         "in arrival order; just no animated rendering. Use for "
                         "scripting or piping.")
-    p.add_argument("--dot-ms", type=int, default=25,
-                   help="ms between each animated dot (default 25)")
-    p.add_argument("--min-dots", type=int, default=5,
-                   help="minimum dots per finding (default 5)")
+    p.add_argument("--dot-ms", type=int, default=18,
+                   help="ms between each animated dot (default 18)")
+    p.add_argument("--min-dots", type=int, default=3,
+                   help="minimum dots per finding (default 3)")
     args = p.parse_args()
 
     if args.no_color or (not args.json and not sys.stdout.isatty()):
