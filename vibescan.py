@@ -1198,15 +1198,19 @@ class Renderer:
 
     def _demo_status(self, f: Finding) -> tuple[str, str]:
         if f.layer == "readiness":
+            # Presence/absence wording — the site doesn't "fail" by not
+            # publishing llms.txt; the file is just absent. Same logic as
+            # the exposures FOUND / ---- split, but here partial-but-present
+            # gets its own PARTIAL tag.
             if f.status == "pass":
-                return "PASS", Color.OK + Color.BOLD
+                return "FOUND", Color.OK + Color.BOLD
             if f.status == "warn":
-                return "WARN", Color.WARN
+                return "PARTIAL", Color.WARN
             if f.status == "info":
                 return "INFO", Color.INFO
             if f.noise:
                 return "SKIP", Color.DIM
-            return "FAIL", Color.FAIL
+            return "ABSENT", Color.DIM
         if f.layer == "exposures":
             if f.status == "hit":
                 return "FOUND", Color.WARN
