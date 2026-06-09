@@ -1196,6 +1196,21 @@ class Renderer:
             return f"Inspecting {f.name}"
         return f.name
 
+    # Category → short tag for exposures. The tag describes *what kind of
+    # information leaked*, not an opinion about how bad it is. Severity for
+    # exposures is content-derived, not path-derived: a `.env` that's empty
+    # is just "exposed", a `.env` from which we extracted an AWS key is
+    # "SECRETS". Avoids the SAST-style alert inflation problem.
+    _EXP_CAT_TAG = {
+        "Coding agents":    "AGENT",
+        "Exposed VCS":      "VCS",
+        "Secrets / config": "CONFIG",
+        "IDE / OS":         "IDE",
+        "Backups / dumps":  "DUMP",
+        "Public lockfiles": "LOCKFILE",
+        "API surface":      "API",
+    }
+
     def _demo_status(self, f: Finding) -> tuple[str, str]:
         if f.layer == "readiness":
             if f.status == "pass":
@@ -1209,15 +1224,16 @@ class Renderer:
             return "FAIL", Color.FAIL
         if f.layer == "exposures":
             if f.status == "hit":
-                sev = f.severity.upper()
-                col = {
-                    "CRITICAL": Color.FAIL + Color.BOLD,
-                    "HIGH":     Color.FAIL,
-                    "MEDIUM":   Color.WARN,
-                    "LOW":      Color.BLUE,
-                    "INFO":     Color.INFO,
-                }.get(sev, Color.INFO)
-                return sev, col
+                tag = self._EXP_CAT_TAG.get(f.category, "EXPOSED")
+                # Override based on actual content evidence
+                if f.evidence.get("secrets_found"):
+                    tag = "SECRETS"
+                    return tag, Color.FAIL + Color.BOLD
+                if f.category == "Exposed VCS":
+                    return tag, Color.FAIL
+                if f.category in ("Coding agents", "Secrets / config", "API surface", "Backups / dumps"):
+                    return tag, Color.WARN
+                return tag, Color.BLUE
             return "----", Color.DIM
         # fingerprint
         if f.status == "hit":
@@ -1335,15 +1351,48 @@ class Renderer:
             self.line(f"{Color.BOLD}[EXPOSURES]{Color.END} "
                       f"{Color.OK}none{Color.END}")
             return
-        sev_counts: dict[str, int] = {}
+
+        # Count by content-derived tag, not by hardcoded severity. SECRETS
+        # only counts files where we actually extracted a recognized key.
+        cat_counts: dict[str, int] = {}
+        secrets_count = 0
+        secret_kinds: dict[str, int] = {}
         for f in hits:
-            sev_counts[f.severity] = sev_counts.get(f.severity, 0) + 1
-        sev_palette = {"critical": Color.FAIL + Color.BOLD, "high": Color.FAIL,
-                       "medium": Color.WARN, "low": Color.BLUE, "info": Color.INFO}
-        parts = [f"{sev_palette[s]}{sev_counts[s]} {s}{Color.END}"
-                 for s in ("critical", "high", "medium", "low", "info") if sev_counts.get(s)]
+            if f.evidence.get("secrets_found"):
+                cat_counts["SECRETS"] = cat_counts.get("SECRETS", 0) + 1
+                secrets_count += 1
+                for s in f.evidence["secrets_found"]:
+                    k = s.get("pattern", "unknown")
+                    secret_kinds[k] = secret_kinds.get(k, 0) + 1
+            else:
+                tag = self._EXP_CAT_TAG.get(f.category, "EXPOSED")
+                cat_counts[tag] = cat_counts.get(tag, 0) + 1
+
+        # Order: SECRETS first (red), then VCS, then everything else
+        order = ["SECRETS", "VCS", "CONFIG", "AGENT", "API", "DUMP", "IDE", "LOCKFILE"]
+        palette = {
+            "SECRETS":  Color.FAIL + Color.BOLD,
+            "VCS":      Color.FAIL,
+            "CONFIG":   Color.WARN,
+            "AGENT":    Color.WARN,
+            "API":      Color.WARN,
+            "DUMP":     Color.WARN,
+            "IDE":      Color.BLUE,
+            "LOCKFILE": Color.BLUE,
+        }
+        parts = [f"{palette.get(t, Color.INFO)}{cat_counts[t]} {t.lower()}{Color.END}"
+                 for t in order if cat_counts.get(t)]
+        # any other tags not in order
+        for t, n in cat_counts.items():
+            if t not in order:
+                parts.append(f"{Color.INFO}{n} {t.lower()}{Color.END}")
+
         self.line(f"{Color.BOLD}[EXPOSURES]{Color.END}  {' · '.join(parts)}  "
-                  f"{Color.DIM}({len(hits)} findings){Color.END}")
+                  f"{Color.DIM}({len(hits)} exposed){Color.END}")
+        if secret_kinds:
+            kinds_str = ", ".join(f"{k} ×{n}" for k, n in
+                                  sorted(secret_kinds.items(), key=lambda x: -x[1]))
+            self.line(f"  {Color.DIM}extracted:{Color.END} {kinds_str}")
 
 
 # ============================================================================
