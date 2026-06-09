@@ -1230,7 +1230,17 @@ class Renderer:
             time.sleep(tick)
             sys.stdout.write(f"{Color.DIM}.{Color.END}")
             sys.stdout.flush()
-        sys.stdout.write(f"  [{status_col}{status:^8}{Color.END}]\n")
+        sys.stdout.write(f"  [{status_col}{status:^8}{Color.END}]")
+
+        # The check label tells the operator what we did; the detail tells
+        # them what was found. Without it, "Reading link headers ... [PASS]"
+        # is opaque — what link rels? what server? Append in dim.
+        if f.detail:
+            used = 2 + LABEL_W + 1 + self.min_dots + 3 + 10  # rough
+            avail = max(20, self.width - used - 3)
+            detail = f.detail if len(f.detail) <= avail else f.detail[: avail - 1] + "…"
+            sys.stdout.write(f"  {Color.DIM}{detail}{Color.END}")
+        sys.stdout.write("\n")
         sys.stdout.flush()
 
     def _render(self, f: Finding) -> None:
