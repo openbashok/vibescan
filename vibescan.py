@@ -918,21 +918,23 @@ SCORE_EXPOSURE_PATHS: dict[str, tuple[int, str]] = {
 }
 
 SCORE_BUILDER_PATTERNS: dict[str, tuple[int, str]] = {
-    # AI-native
+    # AI-native code generators
     "ai_watermark":    (15, "AI-generated watermark"),
     "lovable":         (12, "Lovable"),
     "v0.dev":          (12, "v0.dev"),
     "bolt.new":        (12, "bolt.new"),
     "base44":          (12, "Base44"),
     "gpt-engineer":    (12, "GPT-Engineer"),
+    # Visual / no-code platforms now ship AI layers (Figma Make, Framer AI,
+    # Webflow AI, Wix Studio AI, Bubble AI, Softr AI). Auto-generated code is
+    # auto-generated code; same tier as the AI-native list.
+    "figma":           (12, "Figma"),
+    "framer":          (12, "Framer"),
+    "webflow":         (12, "Webflow"),
+    "wix":             (12, "Wix"),
+    "bubble":          (12, "Bubble"),
+    "softr":           (12, "Softr"),
     "replit":          (8,  "Replit"),
-    # Visual/no-code with AI layers (same risk-class: auto-generated code)
-    "figma":           (8,  "Figma"),
-    "framer":          (8,  "Framer"),
-    "webflow":         (8,  "Webflow"),
-    "wix":             (8,  "Wix"),
-    "bubble":          (8,  "Bubble"),
-    "softr":           (8,  "Softr"),
 }
 
 SCORE_HOST_SUFFIX: dict[str, tuple[int, str]] = {
