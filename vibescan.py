@@ -1387,6 +1387,54 @@ class Renderer:
                       f"{Color.BOLD}{attr}{Color.END} "
                       f"{Color.DIM}{signal}{Color.END}")
 
+    def ai_score(self, v: Verdict, r: ReadinessScore) -> None:
+        """Single unified output: one real number, 0.00–10.00.
+
+        Two axes contribute equally (5.0 each):
+          - vibecoding signals: builders / agents / exposed agent files,
+            from compute_verdict. Saturates at 40 pts of evidence.
+          - agent readiness: % of emerging standards implemented, from
+            compute_readiness_score. Saturates at 100%.
+
+        Sites with neither signal score 0; sites that peg both axes score 10.
+        """
+        vibe_norm  = min(5.0, v.score / 40.0 * 5.0)
+        ready_norm = r.overall_100 / 100.0 * 5.0
+        score = round(vibe_norm + ready_norm, 2)
+
+        # Color: cool for low (no AI footprint), hot for high (lots of AI signals)
+        if score < 2.0:
+            color = Color.OK
+        elif score < 5.0:
+            color = Color.INFO
+        elif score < 7.5:
+            color = Color.WARN
+        else:
+            color = Color.FAIL + Color.BOLD
+
+        exposures_hits = sum(1 for f in self.all
+                             if f.layer == "exposures" and f.status == "hit")
+        exposures_total = sum(1 for f in self.all if f.layer == "exposures")
+        builders = ", ".join(v.builders) if v.builders else "—"
+        agents = ", ".join(v.agents) if v.agents else "—"
+        ready_passed = sum(int(c.passed) for c in r.categories)
+        ready_total = sum(c.total for c in r.categories)
+
+        self.blank()
+        self.line(f"{Color.BOLD}[AI SCORE]{Color.END}  "
+                  f"{color}{Color.BOLD}{score:.2f}{Color.END}"
+                  f"{Color.DIM} / 10{Color.END}")
+        self.blank()
+        self.line(f"  {Color.DIM}vibecoding signals{Color.END}    "
+                  f"{vibe_norm:>4.2f}    "
+                  f"{Color.DIM}builders: {builders}  ·  agents: {agents}{Color.END}")
+        self.line(f"  {Color.DIM}agent readiness   {Color.END}    "
+                  f"{ready_norm:>4.2f}    "
+                  f"{Color.DIM}{ready_passed}/{ready_total} standards implemented "
+                  f"({r.overall_100}%){Color.END}")
+        self.line(f"  {Color.DIM}artifacts exposed {Color.END}            "
+                  f"{Color.DIM}{exposures_hits}/{exposures_total} probed{Color.END}")
+
     def exposures(self) -> None:
         hits = [f for f in self.all if f.layer == "exposures" and f.status == "hit"]
         total = sum(1 for f in self.all if f.layer == "exposures")
@@ -1479,11 +1527,10 @@ def _scan_target(target: str, layers: set[str], args, renderer: Renderer | None,
 
     if renderer is not None:
         renderer.summary(elapsed)
-        if not args.no_verdict:
-            renderer.verdict(compute_verdict(renderer.all))
-        renderer.exposures()
-        if not args.no_score and "readiness" in layers:
-            renderer.score(compute_readiness_score(renderer.all))
+        # Single unified output: AI score 0.00–10.00.
+        v = compute_verdict(renderer.all)
+        r = compute_readiness_score(renderer.all)
+        renderer.ai_score(v, r)
 
     return out, elapsed
 
