@@ -40,7 +40,7 @@ from typing import Callable, Iterator
 DEFAULT_WORKERS = 24
 
 UA = "vibescan/0.5 (+openbash.dev)"
-TIMEOUT = 10
+TIMEOUT = 3
 DOH = "https://cloudflare-dns.com/dns-query"
 
 # Cached at module load: building an SSL context costs ~10-50ms each time.
@@ -147,6 +147,20 @@ def parse_robots(txt: str) -> list[tuple[str, str, str]]:
 # ============================================================================
 # Model
 # ============================================================================
+
+@dataclass
+class Step:
+    """A unit of scan work the renderer can animate around.
+
+    `run()` is the actual check; it returns a list of Findings (often one,
+    but a setup step like "fetch homepage + bundles" returns []). The
+    renderer drives this in a thread so dots can animate while the HTTP
+    request is in flight, not after.
+    """
+    label: str
+    layer: str
+    run: "Callable[[], list[Finding]]"
+
 
 @dataclass
 class Finding:
@@ -520,6 +534,122 @@ def check_ucp(base: str, ctx: dict) -> Finding:
 def check_acp(base: str, ctx: dict) -> Finding:
     return _wellknown_json("Commerce", "ACP", base,
                            ["/.well-known/acp.json", "/.well-known/acp"])
+
+
+def readiness_steps(base: str, host: str) -> list[Step]:
+    """Animated mode: ordered list of (label, run) pairs. Same checks as
+    scan_readiness but the renderer can animate dots while each runs."""
+    ctx: dict = {}
+    aid_hosts = [host]
+    apex = ".".join(host.split(".")[-2:]) if host.count(".") >= 2 else host
+    if apex != host:
+        aid_hosts.append(apex)
+    return [
+        Step("Fetching robots.txt",              "readiness", lambda: [check_robots_txt(base, ctx)]),
+        Step("Discovering sitemap",              "readiness", lambda: [check_sitemap(base, ctx)]),
+        Step("Reading link headers",             "readiness", lambda: [check_link_headers(base, ctx)]),
+        Step("Resolving DNS-AID",                "readiness", lambda: [check_dns_aid(base, ctx, aid_hosts)]),
+        Step("Negotiating markdown",             "readiness", lambda: [check_markdown(base, ctx)]),
+        Step("Parsing AI bot rules",             "readiness", lambda: [check_ai_bot_rules(base, ctx)]),
+        Step("Parsing Content Signals",          "readiness", lambda: [check_content_signals(base, ctx)]),
+        Step("Probing Web Bot Auth",             "readiness", lambda: [check_web_bot_auth(base, ctx)]),
+        Step("Probing API Catalog",              "readiness", lambda: [check_api_catalog(base, ctx)]),
+        Step("Probing OAuth / OIDC discovery",   "readiness", lambda: [check_oauth_discovery(base, ctx)]),
+        Step("Probing OAuth Protected Resource", "readiness", lambda: [check_oauth_pr(base, ctx)]),
+        Step("Reading Auth.md",                  "readiness", lambda: [check_auth_md(base, ctx)]),
+        Step("Probing MCP Server Card",          "readiness", lambda: [check_mcp(base, ctx)]),
+        Step("Probing Agent Skills index",       "readiness", lambda: [check_agent_skills(base, ctx)]),
+        Step("Checking WebMCP",                  "readiness", lambda: [check_webmcp(base, ctx)]),
+        Step("Probing x402",                     "readiness", lambda: [check_x402(base, ctx)]),
+        Step("Inspecting MPP (x-payment-info)",  "readiness", lambda: [check_mpp(base, ctx)]),
+        Step("Probing UCP",                      "readiness", lambda: [check_ucp(base, ctx)]),
+        Step("Probing ACP",                      "readiness", lambda: [check_acp(base, ctx)]),
+    ]
+
+
+def exposures_steps(base: str) -> list[Step]:
+    out: list[Step] = []
+    for cat, path, sev, ct in EXPOSURE_TARGETS:
+        out.append(Step(
+            f"Probing {path}", "exposures",
+            (lambda c=cat, p=path, s=sev, t=ct: [check_exposure(base, c, p, s, t)]),
+        ))
+    out.append(Step("Inspecting /openapi.json (public surface)", "exposures",
+                    lambda: [check_openapi_public(base)]))
+    return out
+
+
+def fingerprint_steps(base: str, host: str) -> list[Step]:
+    state: dict = {}
+
+    def fetch_blob() -> list[Finding]:
+        status, headers, body, _ = http_request(base + "/")
+        if status is None:
+            state["error"] = True
+            return [Finding("fingerprint", "Home", "home", "info", "error", "no response")]
+        state["html"] = body.decode("utf-8", errors="replace")
+        state["headers"] = headers
+        srcs = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', state["html"], re.I)[:8]
+        blob = state["html"]
+        for s in srcs:
+            u = urllib.parse.urljoin(base + "/", s)
+            st, _, b, _ = http_request(u)
+            if st == 200 and b and len(b) < 2_000_000:
+                blob += "\n" + b.decode("utf-8", errors="replace")
+        state["blob"] = blob
+        return []
+
+    def meta_gen() -> list[Finding]:
+        html = state.get("html", "")
+        m = re.search(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        if m:
+            return [Finding("fingerprint", "Stack", "meta generator", "info", "hit",
+                            m.group(1)[:120], evidence={"value": m.group(1)})]
+        return []
+
+    def revealing_headers() -> list[Finding]:
+        headers = state.get("headers") or {}
+        revealed = {h: headers.get(h) for h in REVEALING_HEADERS if headers.get(h)}
+        if revealed:
+            joined = ", ".join(f"{k}={v[:40]}" for k, v in revealed.items())
+            return [Finding("fingerprint", "Stack", "revealing headers", "info", "hit",
+                            joined, evidence={"headers": revealed})]
+        return []
+
+    def host_suffix() -> list[Finding]:
+        s = next((sfx for sfx in BUILDER_HOST_SUFFIXES if host.endswith(sfx)), None)
+        if s:
+            return [Finding("fingerprint", "Host", "prototyping host suffix", "info", "hit",
+                            f"{host} ({s})", evidence={"suffix": s})]
+        return []
+
+    def builders() -> list[Finding]:
+        blob = state.get("blob", "")
+        out: list[Finding] = []
+        for label, pat in BUILDER_BLOB_PATTERNS:
+            m = pat.search(blob)
+            if m:
+                out.append(Finding("fingerprint", "Builders", label, "info", "hit",
+                                   m.group(0)[:80], evidence={"match": m.group(0)[:200]}))
+        return out
+
+    def supabase_jwt() -> list[Finding]:
+        blob = state.get("blob", "")
+        m = SUPABASE_ANON_PATTERN.search(blob)
+        if m:
+            return [Finding("fingerprint", "Other", "supabase anon JWT in bundle",
+                            "low", "hit", "JWT HS256 embedded",
+                            evidence={"sample": m.group(0)[:60]})]
+        return []
+
+    return [
+        Step("Fetching homepage and bundles",   "fingerprint", fetch_blob),
+        Step("Inspecting <meta generator>",     "fingerprint", meta_gen),
+        Step("Inspecting revealing headers",    "fingerprint", revealing_headers),
+        Step("Checking prototyping host suffix","fingerprint", host_suffix),
+        Step("Searching builder watermarks",    "fingerprint", builders),
+        Step("Looking for Supabase anon JWT",   "fingerprint", supabase_jwt),
+    ]
 
 
 def scan_readiness(base: str, host: str, workers: int = DEFAULT_WORKERS) -> Iterator[Finding]:
@@ -1260,37 +1390,119 @@ class Renderer:
         sys.stdout.flush()
         time.sleep(0.35)
 
+    def animate_step(self, step: Step) -> list[Finding]:
+        """Run step.run() in a thread while drawing dots in real time.
+        Returns the list of findings the step produced. Also calls feed()
+        on each so summary counters stay in sync.
+        """
+        import threading
+
+        if step.layer != self._current_layer:
+            self._current_layer = step.layer
+            self._section_header(step.layer)
+
+        self._maybe_quip()
+        self._rendered_count += 1
+
+        # Label width: capped so very wide terminals don't produce a
+        # 150-character runway of trailing space before the dots.
+        LABEL_W = min(40, max(28, self.width - 24))
+        label_disp = step.label[:LABEL_W].ljust(LABEL_W)
+
+        sys.stdout.write(f"  {label_disp} ")
+        sys.stdout.flush()
+
+        # Kick off the check in a background thread so we can draw dots
+        # while it actually runs.
+        holder: list[list[Finding]] = []
+        err: list[Exception] = []
+
+        def runner() -> None:
+            try:
+                holder.append(step.run())
+            except Exception as e:
+                err.append(e)
+
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+
+        tick = self.dot_ms / 1000.0
+        max_dots = 25
+        dots = 0
+        while t.is_alive() and dots < max_dots:
+            time.sleep(tick)
+            sys.stdout.write(f"{Color.DIM}.{Color.END}")
+            sys.stdout.flush()
+            dots += 1
+
+        # Wait for the check to actually finish (with a small grace
+        # window — TIMEOUT is the per-request timeout, not per-step)
+        t.join(timeout=TIMEOUT + 2)
+
+        # Minimum dots for visual consistency on instant-fast checks
+        while dots < self.min_dots:
+            time.sleep(tick)
+            sys.stdout.write(f"{Color.DIM}.{Color.END}")
+            sys.stdout.flush()
+            dots += 1
+
+        # Status decision: derive from the (possibly empty) findings list
+        if err:
+            findings: list[Finding] = [Finding(step.layer, "?", step.label,
+                                               "info", "error", str(err[0]))]
+        elif not holder:
+            findings = [Finding(step.layer, "?", step.label,
+                                "info", "error", "hung past timeout")]
+        else:
+            findings = holder[0]
+
+        if not findings:
+            # Setup step (e.g. "Fetching homepage + bundles") — no
+            # vibescan finding to attribute, just mark it done.
+            sys.stdout.write(f"  [{Color.OK}{'OK':^8}{Color.END}]\n")
+            sys.stdout.flush()
+            return findings
+
+        # First finding drives the [STATUS] tag on this line
+        first = findings[0]
+        self.all.append(first)
+        status, status_col = self._demo_status(first)
+        sys.stdout.write(f"  [{status_col}{status:^8}{Color.END}]\n")
+        sys.stdout.flush()
+
+        # Extra findings (e.g. several builder watermarks in one step)
+        # get their own indented lines, no animation
+        for f in findings[1:]:
+            self.all.append(f)
+            extra_status, extra_col = self._demo_status(f)
+            extra_label = f"  · {self._demo_label(f)}"[:LABEL_W + 2].ljust(LABEL_W + 2)
+            sys.stdout.write(f"  {extra_label}        "
+                             f"  [{extra_col}{extra_status:^8}{Color.END}]\n")
+            sys.stdout.flush()
+
+        return findings
+
     def _render_animated(self, f: Finding) -> None:
-        # New section header on layer change
+        # Legacy path (kept for compatibility with non-step callers).
+        # Just renders the finding statically without real-time dots.
         if f.layer != self._current_layer:
             self._current_layer = f.layer
             self._section_header(f.layer)
-
-        # Drop a one-liner once in a while
         self._maybe_quip()
         self._rendered_count += 1
 
         label = self._demo_label(f)
         status, status_col = self._demo_status(f)
 
-        # Column widths: label takes most of the line, status sits in a
-        # fixed-width bracket at the right
-        status_w = 10  # "[  HIGH  ]" etc.
-        label_w = max(30, self.width - status_w - 14)
-        label_disp = label[: label_w].ljust(label_w)
+        LABEL_W = min(40, max(28, self.width - 24))
+        label_disp = label[:LABEL_W].ljust(LABEL_W)
 
         sys.stdout.write(f"  {label_disp} ")
         sys.stdout.flush()
-
-        # Animate dots: paint them one at a time so the eye can follow
-        n = self.min_dots
-        tick = self.dot_ms / 1000.0
-        for _ in range(n):
-            time.sleep(tick)
+        for _ in range(self.min_dots):
+            time.sleep(self.dot_ms / 1000.0)
             sys.stdout.write(f"{Color.DIM}.{Color.END}")
             sys.stdout.flush()
-
-        # Status block, centered in [  XXXX  ]
         sys.stdout.write(f"  [{status_col}{status:^8}{Color.END}]\n")
         sys.stdout.flush()
 
@@ -1446,27 +1658,40 @@ def _scan_target(target: str, layers: set[str], args, renderer: Renderer | None,
         # Reset accumulator for this target so summaries don't cross-contaminate
         renderer.all = []
 
-    # In animated mode we force sequential execution so the audience sees
-    # one check at a time, in source order. --fast keeps the parallel scan.
-    workers = 1 if (renderer is not None and renderer.animated) else DEFAULT_WORKERS
-
     findings: list[Finding] = []
     t0 = time.time()
-    if "readiness" in layers:
-        for f in scan_readiness(base, host, workers=workers):
-            findings.append(f)
-            if renderer is not None:
-                renderer.feed(f)
-    if "exposures" in layers:
-        for f in scan_exposures(base, workers=workers):
-            findings.append(f)
-            if renderer is not None:
-                renderer.feed(f)
-    if "fingerprint" in layers:
-        for f in scan_fingerprint(base, host):
-            findings.append(f)
-            if renderer is not None:
-                renderer.feed(f)
+
+    animated = renderer is not None and renderer.animated
+
+    if animated:
+        # Sequential, real-time dots driven by the renderer thread.
+        if "readiness" in layers:
+            for step in readiness_steps(base, host):
+                findings.extend(renderer.animate_step(step))
+        if "exposures" in layers:
+            for step in exposures_steps(base):
+                findings.extend(renderer.animate_step(step))
+        if "fingerprint" in layers:
+            for step in fingerprint_steps(base, host):
+                findings.extend(renderer.animate_step(step))
+    else:
+        # Parallel, silent (or JSON-collecting). Use the generator path.
+        if "readiness" in layers:
+            for f in scan_readiness(base, host):
+                findings.append(f)
+                if renderer is not None:
+                    renderer.feed(f)
+        if "exposures" in layers:
+            for f in scan_exposures(base):
+                findings.append(f)
+                if renderer is not None:
+                    renderer.feed(f)
+        if "fingerprint" in layers:
+            for f in scan_fingerprint(base, host):
+                findings.append(f)
+                if renderer is not None:
+                    renderer.feed(f)
+
     elapsed = time.time() - t0
 
     out = {
