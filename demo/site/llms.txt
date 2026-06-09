@@ -1,0 +1,24 @@
+# Acme Habits Tracker
+
+> AI-powered habit tracker. Build habits that actually stick — coaching
+> built on Claude, streak tracking, Supabase-backed sync.
+
+## Docs
+
+- [API docs](https://api.acmehabits.com/docs): full REST + MCP reference
+- [Getting started](https://acmehabits.com/docs/getting-started): 5-minute
+  setup for self-hosters
+- [Authentication](https://acmehabits.com/docs/auth): OAuth + dynamic
+  client registration
+
+## API
+
+- [OpenAPI spec](/openapi.json): machine-readable API description
+- [MCP server card](/.well-known/mcp/server-card.json): MCP tools and
+  transport
+- [Agent registration](/auth.md): how agents register and authenticate
+
+## Optional
+
+- [Pricing](/pricing): plans and limits
+- [Source](https://github.com/acme-internal/habits-tracker): private mirror

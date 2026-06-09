@@ -250,6 +250,31 @@ def check_sitemap(base: str, ctx: dict) -> Finding:
     return _rfind("Discoverability", "sitemap", "fail", "declared sitemaps unreachable")
 
 
+def check_llms_txt(base: str, ctx: dict) -> Finding:
+    """llms.txt (llmstxt.org): a markdown index at the web root that gives
+    LLMs a curated map of the site — H1 title, optional blockquote summary,
+    then sections of links to the canonical text content. Pass requires
+    200 + text/markdown or text/plain + a usable H1.
+    """
+    status, headers, body, _ = http_request(
+        base + "/llms.txt",
+        headers={"Accept": "text/markdown, text/plain, */*"},
+    )
+    if status != 200 or not body:
+        return _rfind("Discoverability", "llms.txt", "fail", f"HTTP {status}")
+    ctype = (headers or {}).get("content-type", "").lower()
+    if "markdown" not in ctype and "plain" not in ctype:
+        return _rfind("Discoverability", "llms.txt", "warn",
+                      f"present but content-type {ctype or 'unset'}")
+    txt = body.decode("utf-8", errors="replace")
+    if not re.search(r"^#\s+\S", txt, re.M):
+        return _rfind("Discoverability", "llms.txt", "warn",
+                      "present but no H1 title")
+    return _rfind("Discoverability", "llms.txt", "pass",
+                  f"200 {ctype.split(';')[0]}",
+                  evidence={"size": len(body)})
+
+
 def check_link_headers(base: str, ctx: dict) -> Finding:
     status, headers, _, _ = http_request(base + "/")
     if status is None:
@@ -535,6 +560,7 @@ def scan_readiness(base: str, host: str, workers: int = DEFAULT_WORKERS) -> Iter
         lambda: check_sitemap(base, ctx),
         lambda: check_link_headers(base, ctx),
         lambda: check_dns_aid(base, ctx, aid_hosts),
+        lambda: check_llms_txt(base, ctx),
         lambda: check_markdown(base, ctx),
         lambda: check_ai_bot_rules(base, ctx),
         lambda: check_content_signals(base, ctx),
@@ -1027,8 +1053,10 @@ def derive_url(f: Finding, base: str, host: str) -> str:
             if recs:
                 return f"dns://{recs[0].split(' ', 1)[1]}"
             return f"dns://_index._agents.{host}"
-        if f.name in ("robots.txt",):
+        if f.name == "robots.txt":
             return base + "/robots.txt"
+        if f.name == "llms.txt":
+            return base + "/llms.txt"
         if f.name in ("link headers", "markdown negotiation"):
             return base + "/"
         if f.name == "sitemap":
@@ -1141,6 +1169,7 @@ class Renderer:
         if f.layer == "readiness":
             verbs = {
                 "robots.txt":               "Fetching",
+                "llms.txt":                 "Fetching",
                 "sitemap":                  "Discovering",
                 "link headers":             "Reading",
                 "DNS-AID":                  "Resolving",
