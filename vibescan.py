@@ -36,9 +36,9 @@ import urllib.request
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Iterator
 
-DEFAULT_WORKERS = 24
+DEFAULT_WORKERS = 64
 
-UA = "vibescan/0.5 (+openbash.dev)"
+UA = "vibescan/0.6 (+openbash.dev)"
 TIMEOUT = 3
 DOH = "https://cloudflare-dns.com/dns-query"
 
@@ -47,10 +47,6 @@ DOH = "https://cloudflare-dns.com/dns-query"
 # multiple seconds for no good reason.
 _SSL_CTX = ssl.create_default_context()
 
-
-# ============================================================================
-# HTTP / DNS
-# ============================================================================
 
 def http_request(
     url: str,
