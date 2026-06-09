@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
-import random
 import re
 import shutil
 import socket
@@ -1209,45 +1208,20 @@ def derive_url(f: Finding, base: str, host: str) -> str:
     return base
 
 
-QUIPS = [
-    "sipping coffee while TLS handshakes...",
-    "nine out of ten devs commit .env at least once",
-    "CLAUDE.md is the new robots.txt",
-    "every dot is a real HTTP request, by the way",
-    "the agents are watching too",
-    "DNS-AID is the new MX",
-    "OpenAPI specs leak more than .git",
-    "somewhere a service-role JWT is being googled right now",
-    "Lovable is just yarn create + opinions",
-    "yes, .env.production is real",
-    "the audit log was the first thing to go",
-    "this could be one curl. it's not.",
-    "scaffold tonight, regret tomorrow",
-    "the docker-compose has the password",
-    ".cursorrules is read-only because trust",
-    "MCP server-card.json was supposed to be optional",
-    "vibescan does not judge. it just collects evidence.",
-    "if you can read this, the bot can too",
-]
-
-
 class Renderer:
     def __init__(self, width: int, verbose: bool, animated: bool = True,
-                 dot_ms: int = 30, min_dots: int = 6,
-                 quip_every: int = 7):
+                 dot_ms: int = 30, min_dots: int = 6):
         self.width = max(80, width)
         self.verbose = verbose
         self.animated = animated
         self.dot_ms = dot_ms
         self.min_dots = min_dots
-        self.quip_every = max(1, quip_every)
         self.all: list[Finding] = []
         self.base: str = ""
         self.host: str = ""
         self._last_t: float | None = None
         self._current_layer: str | None = None
         self._rendered_count: int = 0
-        self._quip_pool: list[str] = []
 
     # ---- timed output primitives ----
 
@@ -1371,25 +1345,6 @@ class Renderer:
         sys.stdout.flush()
         time.sleep(0.15)
 
-    def _next_quip(self) -> str:
-        """Cycle through a shuffled pool so we don't repeat in the same run."""
-        if not self._quip_pool:
-            self._quip_pool = QUIPS.copy()
-            random.shuffle(self._quip_pool)
-        return self._quip_pool.pop()
-
-    def _maybe_quip(self) -> None:
-        """Drop a self-aware one-liner every Nth finding to keep the
-        console feeling alive on long scans. Skipped on quip_every == 0."""
-        if self.quip_every <= 0 or self._rendered_count == 0:
-            return
-        if self._rendered_count % self.quip_every != 0:
-            return
-        quip = self._next_quip()
-        sys.stdout.write(f"\n  {Color.DIM}// {quip}{Color.END}\n\n")
-        sys.stdout.flush()
-        time.sleep(0.35)
-
     def animate_step(self, step: Step) -> list[Finding]:
         """Run step.run() in a thread while drawing dots in real time.
         Returns the list of findings the step produced. Also calls feed()
@@ -1401,7 +1356,6 @@ class Renderer:
             self._current_layer = step.layer
             self._section_header(step.layer)
 
-        self._maybe_quip()
         self._rendered_count += 1
 
         # Label width: capped so very wide terminals don't produce a
@@ -1488,7 +1442,6 @@ class Renderer:
         if f.layer != self._current_layer:
             self._current_layer = f.layer
             self._section_header(f.layer)
-        self._maybe_quip()
         self._rendered_count += 1
 
         label = self._demo_label(f)
